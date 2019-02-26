@@ -4,14 +4,13 @@ using System.Threading.Tasks;
 using GraphQLParser.AST;
 using tanka.graphql.type;
 using tanka.graphql.validation.rules;
-using V2 = tanka.graphql.validation.rules2;
 
 namespace tanka.graphql.validation
 {
     public static class Validator
     {
         public static ValidationResult Validate(
-            IEnumerable<CreateRule> rules,
+            CreateRule[] rules,
             ISchema schema,
             GraphQLDocument document,
             Dictionary<string, object> variableValues = null)

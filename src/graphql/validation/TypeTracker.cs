@@ -26,185 +26,213 @@ namespace tanka.graphql.validation
 
         public TypeTracker(ISchema schema)
         {
-            EnterSelectionSet = selectionSet =>
+            SelectionSet = new NodeVisitor<GraphQLSelectionSet>()
             {
-                var namedType = GetNamedType(GetCurrentType());
-                var complexType = namedType as ComplexType;
-                _parentTypeStack.Push(complexType);
-            };
-
-            EnterFieldSelection = selection =>
-            {
-                var parentType = GetParentType();
-                (string Name, IField Field)? fieldDef = null;
-                IType fieldType = null;
-
-                if (parentType != null)
+                Enter = selectionSet =>
                 {
-                    fieldDef = GetFieldDef(schema, parentType, selection);
-
-                    if (fieldDef != null) fieldType = fieldDef.Value.Field.Type;
-                }
-
-                _fieldDefStack.Push(fieldDef);
-                _typeStack.Push(TypeIs.IsOutputType(fieldType) ? fieldType : null);
+                    var namedType = GetNamedType(GetCurrentType());
+                    var complexType = namedType as ComplexType;
+                    _parentTypeStack.Push(complexType);
+                },
+                Leave = _ => _parentTypeStack.Pop()
             };
 
-            EnterDirective = directive => { _directive = schema.GetDirective(directive.Name.Value); };
-
-            EnterOperationDefinition = definition =>
+            FieldSelection = new NodeVisitor<GraphQLFieldSelection>
             {
-                ObjectType type = null;
-                switch (definition.Operation)
+                Enter = selection =>
                 {
-                    case OperationType.Query:
-                        type = schema.Query;
-                        break;
-                    case OperationType.Mutation:
-                        type = schema.Mutation;
-                        break;
-                    case OperationType.Subscription:
-                        type = schema.Subscription;
-                        break;
-                    default:
-                        throw new ArgumentOutOfRangeException();
-                }
+                    var parentType = GetParentType();
+                    (string Name, IField Field)? fieldDef = null;
+                    IType fieldType = null;
 
-                _typeStack.Push(type);
-            };
+                    if (parentType != null)
+                    {
+                        fieldDef = GetFieldDef(schema, parentType, selection);
 
-            EnterInlineFragment = inlineFragment =>
-            {
-                var typeConditionAst = inlineFragment.TypeCondition;
+                        if (fieldDef != null) fieldType = fieldDef.Value.Field.Type;
+                    }
 
-                IType outputType;
-                if (typeConditionAst != null)
-                    outputType = Ast.TypeFromAst(schema, typeConditionAst);
-                else
-                    outputType = GetNamedType(GetCurrentType());
-
-                _typeStack.Push(TypeIs.IsOutputType(outputType) ? outputType : null);
-            };
-
-            EnterFragmentDefinition = node =>
-            {
-                var typeConditionAst = node.TypeCondition;
-
-                IType outputType;
-                if (typeConditionAst != null)
-                    outputType = Ast.TypeFromAst(schema, typeConditionAst);
-                else
-                    outputType = GetNamedType(GetCurrentType());
-
-                _typeStack.Push(TypeIs.IsOutputType(outputType) ? outputType : null);
-            };
-
-            EnterVariableDefinition = node =>
-            {
-                var inputType = Ast.TypeFromAst(schema, node.Type);
-                _inputTypeStack.Push(TypeIs.IsInputType(inputType) ? inputType : null);
-            };
-
-            EnterArgument = argument =>
-            {
-                Argument argDef = null;
-                IType argType = null;
-
-                if (GetDirective() != null)
+                    _fieldDefStack.Push(fieldDef);
+                    _typeStack.Push(TypeIs.IsOutputType(fieldType) ? fieldType : null);
+                },
+                Leave = _ =>
                 {
-                    argDef = GetDirective()?.GetArgument(argument.Name.Value);
-                    argType = argDef?.Type;
+                    _fieldDefStack.Pop();
+                    _typeStack.Pop();
                 }
-                else if (GetFieldDef() != null)
+            };
+
+            Directive = new NodeVisitor<GraphQLDirective>
+            {
+                Enter = directive => { _directive = schema.GetDirective(directive.Name.Value); },
+                Leave = _ => _directive = null
+            };
+
+            OperationDefinition = new NodeVisitor<GraphQLOperationDefinition>()
+            {
+                Enter = definition =>
                 {
-                    argDef = GetFieldDef()?.Field.GetArgument(argument.Name.Value);
-                    argType = argDef?.Type;
-                }
+                    ObjectType type = null;
+                    switch (definition.Operation)
+                    {
+                        case OperationType.Query:
+                            type = schema.Query;
+                            break;
+                        case OperationType.Mutation:
+                            type = schema.Mutation;
+                            break;
+                        case OperationType.Subscription:
+                            type = schema.Subscription;
+                            break;
+                        default:
+                            throw new ArgumentOutOfRangeException();
+                    }
 
-                _argument = argDef;
-                _defaultValueStack.Push(argDef?.DefaultValue);
-                _inputTypeStack.Push(TypeIs.IsInputType(argType) ? argType : null);
+                    _typeStack.Push(type);
+                },
+                Leave = _ => _typeStack.Pop()
             };
 
-            EnterListValue = node =>
+            InlineFragment = new NodeVisitor<GraphQLInlineFragment>()
             {
-                var listType = GetNullableType(GetInputType());
-                var itemType = listType is List list ? list.WrappedType : listType;
-
-                // List positions never have a default value
-                _defaultValueStack.Push(null);
-                _inputTypeStack.Push(TypeIs.IsInputType(itemType) ? itemType : null);
-            };
-
-            EnterObjectField = node =>
-            {
-                var objectType = GetNamedType(GetInputType());
-                IType inputFieldType = null;
-                InputObjectField inputField = null;
-
-                if (objectType is InputObjectType inputObjectType)
+                Enter = inlineFragment =>
                 {
-                    inputField = schema.GetInputField(
-                        inputObjectType.Name,
-                        node.Name.Value);
+                    var typeConditionAst = inlineFragment.TypeCondition;
 
-                    if (inputField != null)
-                        inputFieldType = inputField.Type;
+                    IType outputType;
+                    if (typeConditionAst != null)
+                        outputType = Ast.TypeFromAst(schema, typeConditionAst);
+                    else
+                        outputType = GetNamedType(GetCurrentType());
+
+                    _typeStack.Push(TypeIs.IsOutputType(outputType) ? outputType : null);
+                },
+                Leave = _ => _typeStack.Pop()
+            };
+
+            FragmentDefinition = new NodeVisitor<GraphQLFragmentDefinition>()
+            {
+                Enter = node =>
+                {
+                    var typeConditionAst = node.TypeCondition;
+
+                    IType outputType;
+                    if (typeConditionAst != null)
+                        outputType = Ast.TypeFromAst(schema, typeConditionAst);
+                    else
+                        outputType = GetNamedType(GetCurrentType());
+
+                    _typeStack.Push(TypeIs.IsOutputType(outputType) ? outputType : null);
+                },
+                Leave = _ => _typeStack.Pop()
+            };
+
+            VariableDefinition = new NodeVisitor<GraphQLVariableDefinition>()
+            {
+                Enter = node =>
+                {
+                    var inputType = Ast.TypeFromAst(schema, node.Type);
+                    _inputTypeStack.Push(TypeIs.IsInputType(inputType) ? inputType : null);
+                },
+                Leave = _ => _inputTypeStack.Pop()
+            };
+
+            Argument = new NodeVisitor<GraphQLArgument>()
+            {
+                Enter = argument =>
+                {
+                    Argument argDef = null;
+                    IType argType = null;
+
+                    if (GetDirective() != null)
+                    {
+                        argDef = GetDirective()?.GetArgument(argument.Name.Value);
+                        argType = argDef?.Type;
+                    }
+                    else if (GetFieldDef() != null)
+                    {
+                        argDef = GetFieldDef()?.Field.GetArgument(argument.Name.Value);
+                        argType = argDef?.Type;
+                    }
+
+                    _argument = argDef;
+                    _defaultValueStack.Push(argDef?.DefaultValue);
+                    _inputTypeStack.Push(TypeIs.IsInputType(argType) ? argType : null);
+                },
+                Leave = _ =>
+                {
+                    _argument = null;
+                    _defaultValueStack.Pop();
+                    _inputTypeStack.Pop();
                 }
-
-                _defaultValueStack.Push(inputField?.DefaultValue);
-                _inputTypeStack.Push(TypeIs.IsInputType(inputFieldType) ? inputFieldType : null);
             };
 
-            EnterEnumValue = value =>
+            ListValue = new NodeVisitor<GraphQLListValue>()
             {
-                var maybeEnumType = GetNamedType(GetInputType());
-                object enumValue = null;
+                Enter = node =>
+                {
+                    var listType = GetNullableType(GetInputType());
+                    var itemType = listType is List list ? list.WrappedType : listType;
 
-                if (maybeEnumType is EnumType enumType)
-                    enumValue = enumType.ParseLiteral(value);
-
-                _enumValue = enumValue;
+                    // List positions never have a default value
+                    _defaultValueStack.Push(null);
+                    _inputTypeStack.Push(TypeIs.IsInputType(itemType) ? itemType : null);
+                },
+                Leave = _ =>
+                {
+                    _defaultValueStack.Pop();
+                    _inputTypeStack.Pop();
+                }
             };
 
-            LeaveSelectionSet = _ => _parentTypeStack.Pop();
-
-            LeaveFieldSelection = _ =>
+            ObjectField = new NodeVisitor<GraphQLObjectField>()
             {
-                _fieldDefStack.Pop();
-                _typeStack.Pop();
+                Enter = node =>
+                {
+                    var objectType = GetNamedType(GetInputType());
+                    IType inputFieldType = null;
+                    InputObjectField inputField = null;
+
+                    if (objectType is InputObjectType inputObjectType)
+                    {
+                        inputField = schema.GetInputField(
+                            inputObjectType.Name,
+                            node.Name.Value);
+
+                        if (inputField != null)
+                            inputFieldType = inputField.Type;
+                    }
+
+                    _defaultValueStack.Push(inputField?.DefaultValue);
+                    _inputTypeStack.Push(TypeIs.IsInputType(inputFieldType) ? inputFieldType : null);
+                },
+                Leave = _ =>
+                {
+                    _defaultValueStack.Pop();
+                    _inputTypeStack.Pop();
+                }
             };
 
-            LeaveDirective = _ => _directive = null;
-
-            LeaveOperationDefinition = _ => _typeStack.Pop();
-
-            LeaveInlineFragment = _ => _typeStack.Pop();
-
-            LeaveFragmentDefinition = _ => _typeStack.Pop();
-
-            LeaveVariableDefinition = _ => _inputTypeStack.Pop();
-
-            LeaveArgument = _ =>
+            EnumValue = new NodeVisitor<GraphQLScalarValue>()
             {
-                _argument = null;
-                _defaultValueStack.Pop();
-                _inputTypeStack.Pop();
+                Enter = value =>
+                {
+                    var maybeEnumType = GetNamedType(GetInputType());
+                    object enumValue = null;
+
+                    if (maybeEnumType is EnumType enumType)
+                        enumValue = enumType.ParseLiteral(value);
+
+                    _enumValue = enumValue;
+                },
+                Leave = _ => _enumValue = null
             };
 
-            LeaveListValue = _ =>
+            Document = new NodeVisitor<GraphQLDocument>()
             {
-                _defaultValueStack.Pop();
-                _inputTypeStack.Pop();
+                Enter = { },
+                Leave = { }
             };
-
-            LeaveObjectField = _ =>
-            {
-                _defaultValueStack.Pop();
-                _inputTypeStack.Pop();
-            };
-
-            LeaveEnumValue = _ => _enumValue = null;
         }
 
         public IType GetCurrentType()

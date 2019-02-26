@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http.Headers;
 using GraphQLParser.AST;
 using tanka.graphql.language;
 using tanka.graphql.type;
@@ -13,7 +14,7 @@ namespace tanka.graphql.validation
             new List<ValidationError>();
 
         public RulesWalker(
-            IEnumerable<CreateRule> rules,
+            CreateRule[] rules,
             ISchema schema,
             GraphQLDocument document,
             Dictionary<string, object> variableValues = null)
@@ -21,20 +22,54 @@ namespace tanka.graphql.validation
             Schema = schema;
             Document = document;
             VariableValues = variableValues;
-            NodeVisitors = CreateVisitors(rules).ToList();
+            _nodeVisitors = CreateVisitors(rules).ToArray();
 
             //todo: this will break
-            Tracker = NodeVisitors.First() as TypeTracker;
+            Tracker = _nodeVisitors[0] as TypeTracker;
         }
 
-        protected IEnumerable<RuleVisitor> NodeVisitors { get; set; }
+        private readonly RuleVisitor[] _nodeVisitors;
 
-        protected IEnumerable<RuleVisitor> CreateVisitors(IEnumerable<CreateRule> rules)
+        protected RuleVisitor[] CreateVisitors(CreateRule[] rules)
         {
-            var createRules = new List<CreateRule>(rules);
-            createRules.Insert(0, context => new TypeTracker(context.Schema));
+            return new[]
+            {
+                CreateCombinedRuleVisitor(rules)
+            };
+        }
 
-            return createRules.Select(r => r(this));
+        private RuleVisitor CreateCombinedRuleVisitor(CreateRule[] rules)
+        {
+            var result = new TypeTracker(Schema);
+
+            foreach (var createRule in rules)
+            {
+                var rule = createRule(this);
+
+                if (rule.Document?.Enter != null)
+                {
+                    result.Document.Enter += rule.Document.Enter;
+                }
+
+                if (rule.Document?.Leave != null)
+                {
+                    result.Document.Leave += rule.Document.Leave;
+                }
+
+                if (rule.OperationDefinition?.Enter != null)
+                    result.OperationDefinition.Enter += rule.OperationDefinition.Enter;
+
+                if (rule.OperationDefinition?.Leave != null)
+                    result.OperationDefinition.Leave += rule.OperationDefinition.Leave;
+
+                if (rule.FieldSelection?.Enter != null)
+                    result.FieldSelection.Enter += rule.FieldSelection.Enter;
+
+                if (rule.FieldSelection?.Leave != null)
+                    result.FieldSelection.Leave += rule.FieldSelection.Leave;
+            }
+
+            return result;
         }
 
         public GraphQLDocument Document { get; }
@@ -66,26 +101,35 @@ namespace tanka.graphql.validation
             return BuildResult();
         }
 
+        private NodeVisitor<T>[] GetVisitors<T>(Func<RuleVisitor, NodeVisitor<T>> selector) where T: ASTNode
+        {
+            var nodeVisitors = _nodeVisitors
+                .Select(selector);
+
+            return nodeVisitors.ToArray();
+        }
+
         public override void Visit(GraphQLDocument document)
         {
-            foreach (var visitor in NodeVisitors)
+            var visitors = _nodeVisitors;
+            foreach (var visitor in visitors)
             {
-                visitor.EnterDocument?.Invoke(document);
+                visitor?.Document.Enter?.Invoke(document);
             }
 
             base.Visit(document);
 
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in visitors)
             {
-                visitor.LeaveDocument?.Invoke(document);
+                visitor?.Document.Leave?.Invoke(document);
             }
         }
 
         public override GraphQLName BeginVisitAlias(GraphQLName alias)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.Alias))
             {
-                visitor.EnterAlias?.Invoke(alias);
+                visitor?.Enter?.Invoke(alias);
             }
 
             return base.BeginVisitAlias(alias);
@@ -93,9 +137,9 @@ namespace tanka.graphql.validation
 
         public override GraphQLArgument BeginVisitArgument(GraphQLArgument argument)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.Argument))
             {
-                visitor.EnterArgument?.Invoke(argument);
+                visitor?.Enter?.Invoke(argument);
             }
 
             return base.BeginVisitArgument(argument);
@@ -104,9 +148,9 @@ namespace tanka.graphql.validation
         public override GraphQLScalarValue BeginVisitBooleanValue(
             GraphQLScalarValue value)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.BooleanValue))
             {
-                visitor.EnterBooleanValue?.Invoke(value);
+                visitor?.Enter?.Invoke(value);
             }
 
             return base.BeginVisitBooleanValue(value);
@@ -114,16 +158,18 @@ namespace tanka.graphql.validation
 
         public override GraphQLDirective BeginVisitDirective(GraphQLDirective directive)
         {
-            foreach (var visitor in NodeVisitors)
+            var visitors = GetVisitors(r => r.Directive);
+
+            foreach (var visitor in visitors)
             {
-                visitor.EnterDirective?.Invoke(directive);
+                visitor?.Enter?.Invoke(directive);
             }
 
             var _ = base.BeginVisitDirective(directive);
 
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in visitors)
             {
-                visitor.LeaveDirective?.Invoke(directive);
+                visitor?.Leave?.Invoke(directive);
             }
 
             return _;
@@ -131,16 +177,17 @@ namespace tanka.graphql.validation
 
         public override GraphQLScalarValue BeginVisitEnumValue(GraphQLScalarValue value)
         {
-            foreach (var visitor in NodeVisitors)
+            var visitors = GetVisitors(r => r.EnumValue);
+            foreach (var visitor in visitors)
             {
-                visitor.EnterEnumValue?.Invoke(value);
+                visitor?.Enter?.Invoke(value);
             }
 
             var _ = base.BeginVisitEnumValue(value);
 
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in visitors)
             {
-                visitor.LeaveEnumValue?.Invoke(value);
+                visitor?.Leave?.Invoke(value);
             }
 
             return _;
@@ -149,9 +196,9 @@ namespace tanka.graphql.validation
         public override GraphQLFieldSelection BeginVisitFieldSelection(
             GraphQLFieldSelection selection)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.FieldSelection))
             {
-                visitor.EnterFieldSelection?.Invoke(selection);
+                visitor?.Enter?.Invoke(selection);
             }
 
             return base.BeginVisitFieldSelection(selection);
@@ -160,9 +207,9 @@ namespace tanka.graphql.validation
         public override GraphQLScalarValue BeginVisitFloatValue(
             GraphQLScalarValue value)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.FloatValue))
             {
-                visitor.EnterFloatValue?.Invoke(value);
+                visitor?.Enter?.Invoke(value);
             }
 
             return base.BeginVisitFloatValue(value);
@@ -171,16 +218,17 @@ namespace tanka.graphql.validation
         public override GraphQLFragmentDefinition BeginVisitFragmentDefinition(
             GraphQLFragmentDefinition node)
         {
-            foreach (var visitor in NodeVisitors)
+            var visitors = GetVisitors(r => r.FragmentDefinition);
+            foreach (var visitor in visitors)
             {
-                visitor.EnterFragmentDefinition?.Invoke(node);
+                visitor?.Enter?.Invoke(node);
             }
 
             var result = base.BeginVisitFragmentDefinition(node);
 
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in visitors)
             {
-                visitor.LeaveFragmentDefinition?.Invoke(node);
+                visitor?.Leave?.Invoke(node);
             }
 
             return result;
@@ -189,9 +237,9 @@ namespace tanka.graphql.validation
         public override GraphQLFragmentSpread BeginVisitFragmentSpread(
             GraphQLFragmentSpread fragmentSpread)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.FragmentSpread))
             {
-                visitor.EnterFragmentSpread?.Invoke(fragmentSpread);
+                visitor?.Enter?.Invoke(fragmentSpread);
             }
 
             return base.BeginVisitFragmentSpread(fragmentSpread);
@@ -200,16 +248,17 @@ namespace tanka.graphql.validation
         public override GraphQLInlineFragment BeginVisitInlineFragment(
             GraphQLInlineFragment inlineFragment)
         {
-            foreach (var visitor in NodeVisitors)
+            var visitors = GetVisitors(r => r.InlineFragment);
+            foreach (var visitor in visitors)
             {
-                visitor.EnterInlineFragment?.Invoke(inlineFragment);
+                visitor?.Enter?.Invoke(inlineFragment);
             }
 
             var _ = base.BeginVisitInlineFragment(inlineFragment);
 
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in visitors)
             {
-                visitor.LeaveInlineFragment?.Invoke(inlineFragment);
+                visitor?.Leave?.Invoke(inlineFragment);
             }
 
             return _;
@@ -217,9 +266,9 @@ namespace tanka.graphql.validation
 
         public override GraphQLScalarValue BeginVisitIntValue(GraphQLScalarValue value)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.IntValue))
             {
-                visitor.EnterIntValue?.Invoke(value);
+                visitor?.Enter?.Invoke(value);
             }
 
             return base.BeginVisitIntValue(value);
@@ -227,9 +276,9 @@ namespace tanka.graphql.validation
 
         public override GraphQLName BeginVisitName(GraphQLName name)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.Name))
             {
-                visitor.EnterName?.Invoke(name);
+                visitor?.Enter?.Invoke(name);
             }
 
             return base.BeginVisitName(name);
@@ -238,9 +287,9 @@ namespace tanka.graphql.validation
         public override GraphQLNamedType BeginVisitNamedType(
             GraphQLNamedType typeCondition)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.NamedType))
             {
-                visitor.EnterNamedType?.Invoke(typeCondition);
+                visitor?.Enter?.Invoke(typeCondition);
             }
 
             return base.BeginVisitNamedType(typeCondition);
@@ -249,9 +298,9 @@ namespace tanka.graphql.validation
         public override GraphQLOperationDefinition BeginVisitOperationDefinition(
             GraphQLOperationDefinition definition)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.OperationDefinition))
             {
-                visitor.EnterOperationDefinition?.Invoke(definition);
+                visitor?.Enter?.Invoke(definition);
             }
 
             return base.BeginVisitOperationDefinition(definition);
@@ -260,9 +309,9 @@ namespace tanka.graphql.validation
         public override GraphQLOperationDefinition EndVisitOperationDefinition(
             GraphQLOperationDefinition definition)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.OperationDefinition))
             {
-                visitor.LeaveOperationDefinition?.Invoke(definition);
+                visitor?.Leave?.Invoke(definition);
             }
 
             return base.EndVisitOperationDefinition(definition);
@@ -271,16 +320,17 @@ namespace tanka.graphql.validation
         public override GraphQLSelectionSet BeginVisitSelectionSet(
             GraphQLSelectionSet selectionSet)
         {
-            foreach (var visitor in NodeVisitors)
+            var visitors = GetVisitors(r => r.SelectionSet);
+            foreach (var visitor in visitors)
             {
-                visitor.EnterSelectionSet?.Invoke(selectionSet);
+                visitor?.Enter?.Invoke(selectionSet);
             }
 
             var _ = base.BeginVisitSelectionSet(selectionSet);
 
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in visitors)
             {
-                visitor.LeaveSelectionSet?.Invoke(selectionSet);
+                visitor?.Leave?.Invoke(selectionSet);
             }
 
             return _;
@@ -289,9 +339,9 @@ namespace tanka.graphql.validation
         public override GraphQLScalarValue BeginVisitStringValue(
             GraphQLScalarValue value)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.StringValue))
             {
-                visitor.EnterStringValue?.Invoke(value);
+                visitor?.Enter?.Invoke(value);
             }
 
             return base.BeginVisitStringValue(value);
@@ -299,9 +349,9 @@ namespace tanka.graphql.validation
 
         public override GraphQLVariable BeginVisitVariable(GraphQLVariable variable)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.Variable))
             {
-                visitor.EnterVariable?.Invoke(variable);
+                visitor?.Enter?.Invoke(variable);
             }
 
             return base.BeginVisitVariable(variable);
@@ -310,16 +360,17 @@ namespace tanka.graphql.validation
         public override GraphQLVariableDefinition BeginVisitVariableDefinition(
             GraphQLVariableDefinition node)
         {
-            foreach (var visitor in NodeVisitors)
+            var visitors = GetVisitors(r => r.VariableDefinition);
+            foreach (var visitor in visitors)
             {
-                visitor.EnterVariableDefinition?.Invoke(node);
+                visitor?.Enter?.Invoke(node);
             }
 
             var _ = base.BeginVisitVariableDefinition(node);
 
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in visitors)
             {
-                visitor.LeaveVariableDefinition?.Invoke(node);
+                visitor?.Leave?.Invoke(node);
             }
 
             return _;
@@ -327,9 +378,9 @@ namespace tanka.graphql.validation
 
         public override GraphQLArgument EndVisitArgument(GraphQLArgument argument)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.Argument))
             {
-                visitor.LeaveArgument?.Invoke(argument);
+                visitor?.Leave?.Invoke(argument);
             }
 
             return base.EndVisitArgument(argument);
@@ -338,9 +389,9 @@ namespace tanka.graphql.validation
         public override GraphQLFieldSelection EndVisitFieldSelection(
             GraphQLFieldSelection selection)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.FieldSelection))
             {
-                visitor.LeaveFieldSelection?.Invoke(selection);
+                visitor?.Leave?.Invoke(selection);
             }
 
             return base.EndVisitFieldSelection(selection);
@@ -348,9 +399,9 @@ namespace tanka.graphql.validation
 
         public override GraphQLVariable EndVisitVariable(GraphQLVariable variable)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.Variable))
             {
-                visitor.EnterVariable?.Invoke(variable);
+                visitor?.Leave?.Invoke(variable);
             }
 
             return base.EndVisitVariable(variable);
@@ -359,16 +410,17 @@ namespace tanka.graphql.validation
         public override GraphQLObjectField BeginVisitObjectField(
             GraphQLObjectField node)
         {
-            foreach (var visitor in NodeVisitors)
+            var visitors = GetVisitors(r => r.ObjectField);
+            foreach (var visitor in visitors)
             {
-                visitor.EnterObjectField?.Invoke(node);
+                visitor?.Enter?.Invoke(node);
             }
 
             var _ = base.BeginVisitObjectField(node);
 
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in visitors)
             {
-                visitor.LeaveObjectField?.Invoke(node);
+                visitor?.Leave?.Invoke(node);
             }
 
             return _;
@@ -377,9 +429,9 @@ namespace tanka.graphql.validation
         public override GraphQLObjectValue BeginVisitObjectValue(
             GraphQLObjectValue node)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.ObjectValue))
             {
-                visitor.EnterObjectValue?.Invoke(node);
+                visitor?.Enter?.Invoke(node);
             }
 
             return base.BeginVisitObjectValue(node);
@@ -387,29 +439,29 @@ namespace tanka.graphql.validation
 
         public override GraphQLObjectValue EndVisitObjectValue(GraphQLObjectValue node)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.ObjectValue))
             {
-                visitor.LeaveObjectValue?.Invoke(node);
+                visitor?.Leave?.Invoke(node);
             }
 
             return base.EndVisitObjectValue(node);
         }
 
-        public override ASTNode BeginVisitNode(ASTNode node)
+        /*public override ASTNode BeginVisitNode(ASTNode node)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.Node))
             {
-                visitor.EnterNode?.Invoke(node);
+                visitor?.Enter?.Invoke(node);
             }
 
             return base.BeginVisitNode(node);
-        }
+        }*/
 
         public override GraphQLListValue BeginVisitListValue(GraphQLListValue node)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.ListValue))
             {
-                visitor.EnterListValue?.Invoke(node);
+                visitor?.Enter?.Invoke(node);
             }
 
             return base.BeginVisitListValue(node);
@@ -417,9 +469,9 @@ namespace tanka.graphql.validation
 
         public override GraphQLListValue EndVisitListValue(GraphQLListValue node)
         {
-            foreach (var visitor in NodeVisitors)
+            foreach (var visitor in GetVisitors(r => r.ListValue))
             {
-                visitor.LeaveListValue?.Invoke(node);
+                visitor?.Leave?.Invoke(node);
             }
 
             return base.EndVisitListValue(node);

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using GraphQLParser.AST;
 using tanka.graphql.sdl;
 using tanka.graphql.type;
@@ -111,6 +112,51 @@ namespace tanka.graphql.tests.validation
                 Schema,
                 document,
                 variables);
+        }
+
+        [Fact]
+        public void TypeTracker()
+        {
+            /* Given */
+            var document = Parser.ParseDocument(
+                @"query getDogName {
+                  dog {
+                    name
+                  }
+                }");
+
+            /* When */
+            var result = Validate(
+                document,
+                context => new RuleVisitor());
+
+            /* Then */
+            Assert.True(result.IsValid);
+        }
+
+        [Fact]
+        public void All_ExecutionRules()
+        {
+            /* Given */
+            var document = Parser.ParseDocument(
+                @"{
+                      dog {
+                        ...fragmentOne
+                      }
+                    }
+
+                    fragment fragmentOne on Dog {
+                      name
+                    }");
+
+            /* When */
+            var result = Validator.Validate(
+                ExecutionRules.All,
+                Schema,
+                document);
+
+            /* Then */
+            Assert.True(result.IsValid);
         }
 
         [Fact]

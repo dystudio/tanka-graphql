@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Data;
 using System.Linq;
 using GraphQLParser.AST;
 using tanka.graphql.execution;
@@ -8,21 +9,21 @@ namespace tanka.graphql.validation
 {
     public static class ExecutionRules
     {
-        public static IEnumerable<CreateRule> All = new[]
+        public static CreateRule[] All =
         {
             R511ExecutableDefinitions(),
             R5211OperationNameUniqueness(),
             R5221LoneAnonymousOperation(),
-            R5511FragmentNameUniqueness(),
+            /*R5511FragmentNameUniqueness(),
             R5512FragmentSpreadTypeExistence(),
             R5513FragmentsOnCompositeTypes(),
-            R5514FragmentsMustBeUsed(),
+            R5514FragmentsMustBeUsed(),*/
             R5231SingleRootField(),
             R531FieldSelections(),
             R533LeafFieldSelections(),
-            R541ArgumentNames(),
+            /*R541ArgumentNames(),
             R542ArgumentUniqueness(),
-            R5421RequiredArguments(),
+            R5421RequiredArguments()*/
         };
 
 
@@ -35,25 +36,29 @@ namespace tanka.graphql.validation
         {
             return context => new RuleVisitor
             {
-                EnterDocument = document =>
+                Document = new NodeVisitor<GraphQLDocument>()
                 {
-                    foreach (var definition in document.Definitions)
+                    Enter = document =>
                     {
-                        var valid = definition.Kind == ASTNodeKind.OperationDefinition
-                                    || definition.Kind == ASTNodeKind.FragmentDefinition;
+                        foreach (var definition in document.Definitions)
+                        {
+                            var valid = definition.Kind == ASTNodeKind.OperationDefinition
+                                        || definition.Kind == ASTNodeKind.FragmentDefinition;
 
-                        if (!valid)
-                            context.Error(
-                                ValidationErrorCodes.R511ExecutableDefinitions,
-                                "GraphQL execution will only consider the " +
-                                "executable definitions Operation and Fragment. " +
-                                "Type system definitions and extensions are not " +
-                                "executable, and are not considered during execution.",
-                                definition);
+                            if (!valid)
+                                context.Error(
+                                    ValidationErrorCodes.R511ExecutableDefinitions,
+                                    "GraphQL execution will only consider the " +
+                                    "executable definitions Operation and Fragment. " +
+                                    "Type system definitions and extensions are not " +
+                                    "executable, and are not considered during execution.",
+                                    definition);
+                        }
                     }
                 }
             };
         }
+
 
         /// <summary>
         ///     Formal Specification
@@ -70,20 +75,23 @@ namespace tanka.graphql.validation
                 var known = new List<string>();
                 return new RuleVisitor
                 {
-                    EnterOperationDefinition = definition =>
+                    OperationDefinition = new NodeVisitor<GraphQLOperationDefinition>()
                     {
-                        var operationName = definition.Name?.Value;
+                        Enter = definition =>
+                        {
+                            var operationName = definition.Name?.Value;
 
-                        if (string.IsNullOrWhiteSpace(operationName))
-                            return;
+                            if (string.IsNullOrWhiteSpace(operationName))
+                                return;
 
-                        if (known.Contains(operationName))
-                            context.Error(ValidationErrorCodes.R5211OperationNameUniqueness,
-                                "Each named operation definition must be unique within a " +
-                                "document when referred to by its name.",
-                                definition);
+                            if (known.Contains(operationName))
+                                context.Error(ValidationErrorCodes.R5211OperationNameUniqueness,
+                                    "Each named operation definition must be unique within a " +
+                                    "document when referred to by its name.",
+                                    definition);
 
-                        known.Add(operationName);
+                            known.Add(operationName);
+                        }
                     }
                 };
             };
@@ -101,23 +109,26 @@ namespace tanka.graphql.validation
             {
                 return new RuleVisitor
                 {
-                    EnterDocument = document =>
+                    Document = new NodeVisitor<GraphQLDocument>()
                     {
-                        var operations = document.Definitions
-                            .OfType<GraphQLOperationDefinition>()
-                            .ToList();
+                        Enter = document =>
+                        {
+                            var operations = document.Definitions
+                                .OfType<GraphQLOperationDefinition>()
+                                .ToList();
 
-                        var anonymous = operations
-                            .Count(op => string.IsNullOrEmpty(op.Name?.Value));
+                            var anonymous = operations
+                                .Count(op => string.IsNullOrEmpty(op.Name?.Value));
 
-                        if (operations.Count() > 1)
-                            if (anonymous > 0)
-                                context.Error(
-                                    ValidationErrorCodes.R5221LoneAnonymousOperation,
-                                    "GraphQL allows a short‐hand form for defining " +
-                                    "query operations when only that one operation exists in " +
-                                    "the document.",
-                                    operations);
+                            if (operations.Count() > 1)
+                                if (anonymous > 0)
+                                    context.Error(
+                                        ValidationErrorCodes.R5221LoneAnonymousOperation,
+                                        "GraphQL allows a short‐hand form for defining " +
+                                        "query operations when only that one operation exists in " +
+                                        "the document.",
+                                        operations);
+                        }
                     }
                 };
             };
@@ -135,39 +146,42 @@ namespace tanka.graphql.validation
         {
             return context => new RuleVisitor
             {
-                EnterDocument = document =>
+                Document = new NodeVisitor<GraphQLDocument>()
                 {
-                    var subscriptions = document.Definitions
-                        .OfType<GraphQLOperationDefinition>()
-                        .Where(op => op.Operation == OperationType.Subscription)
-                        .ToList();
-
-                    if (!subscriptions.Any())
-                        return;
-
-                    var schema = context.Schema;
-                    //todo(pekka): should this report error?
-                    if (schema.Subscription == null)
-                        return;
-
-                    var subscriptionType = schema.Subscription;
-                    foreach (var subscription in subscriptions)
+                    Enter = document =>
                     {
-                        var selectionSet = subscription.SelectionSet;
-                        var variableValues = new Dictionary<string, object>();
+                        var subscriptions = document.Definitions
+                            .OfType<GraphQLOperationDefinition>()
+                            .Where(op => op.Operation == OperationType.Subscription)
+                            .ToList();
 
-                        var groupedFieldSet = SelectionSets.CollectFields(
-                            schema,
-                            context.Document,
-                            subscriptionType,
-                            selectionSet,
-                            variableValues);
+                        if (!subscriptions.Any())
+                            return;
 
-                        if (groupedFieldSet.Count != 1)
-                            context.Error(
-                                ValidationErrorCodes.R5231SingleRootField,
-                                "Subscription operations must have exactly one root field.",
-                                subscription);
+                        var schema = context.Schema;
+                        //todo(pekka): should this report error?
+                        if (schema.Subscription == null)
+                            return;
+
+                        var subscriptionType = schema.Subscription;
+                        foreach (var subscription in subscriptions)
+                        {
+                            var selectionSet = subscription.SelectionSet;
+                            var variableValues = new Dictionary<string, object>();
+
+                            var groupedFieldSet = SelectionSets.CollectFields(
+                                schema,
+                                context.Document,
+                                subscriptionType,
+                                selectionSet,
+                                variableValues);
+
+                            if (groupedFieldSet.Count != 1)
+                                context.Error(
+                                    ValidationErrorCodes.R5231SingleRootField,
+                                    "Subscription operations must have exactly one root field.",
+                                    subscription);
+                        }
                     }
                 }
             };
@@ -182,20 +196,23 @@ namespace tanka.graphql.validation
         {
             return context => new RuleVisitor
             {
-                EnterFieldSelection = selection =>
+                FieldSelection = new NodeVisitor<GraphQLFieldSelection>()
                 {
-                    var fieldName = selection.Name.Value;
+                    Enter = selection =>
+                    {
+                        var fieldName = selection.Name.Value;
 
-                    if (fieldName == "__typename")
-                        return;
+                        if (fieldName == "__typename")
+                            return;
 
-                    if (context.Tracker.GetFieldDef() == null)
-                        context.Error(
-                            ValidationErrorCodes.R531FieldSelections,
-                            "The target field of a field selection must be defined " +
-                            "on the scoped type of the selection set. There are no " +
-                            "limitations on alias names.",
-                            selection);
+                        if (context.Tracker.GetFieldDef() == null)
+                            context.Error(
+                                ValidationErrorCodes.R531FieldSelections,
+                                "The target field of a field selection must be defined " +
+                                "on the scoped type of the selection set. There are no " +
+                                "limitations on alias names.",
+                                selection);
+                    }
                 }
             };
         }
@@ -212,47 +229,50 @@ namespace tanka.graphql.validation
         {
             return context => new RuleVisitor
             {
-                EnterFieldSelection = selection =>
+                FieldSelection = new NodeVisitor<GraphQLFieldSelection>()
                 {
-                    var fieldName = selection.Name.Value;
-
-                    if (fieldName == "__typename")
-                        return;
-
-                    var field = context.Tracker.GetFieldDef();
-
-                    if (field != null)
+                    Enter = selection =>
                     {
-                        var selectionType = field.Value.Field.Type;
-                        var hasSubSelection = selection.SelectionSet?.Selections?.Any();
+                        var fieldName = selection.Name.Value;
 
-                        if (selectionType is ScalarType && hasSubSelection == true)
-                            context.Error(
-                                ValidationErrorCodes.R533LeafFieldSelections,
-                                "Field selections on scalars or enums are never " +
-                                "allowed, because they are the leaf nodes of any GraphQL query.",
-                                selection);
+                        if (fieldName == "__typename")
+                            return;
 
-                        if (selectionType is EnumType && hasSubSelection == true)
-                            context.Error(
-                                ValidationErrorCodes.R533LeafFieldSelections,
-                                "Field selections on scalars or enums are never " +
-                                "allowed, because they are the leaf nodes of any GraphQL query.",
-                                selection);
+                        var field = context.Tracker.GetFieldDef();
 
-                        if (selectionType is ComplexType && hasSubSelection == null)
-                            context.Error(
-                                ValidationErrorCodes.R533LeafFieldSelections,
-                                "Leaf selections on objects, interfaces, and unions " +
-                                "without subfields are disallowed.",
-                                selection);
+                        if (field != null)
+                        {
+                            var selectionType = field.Value.Field.Type;
+                            var hasSubSelection = selection.SelectionSet?.Selections?.Any();
 
-                        if (selectionType is UnionType && hasSubSelection == null)
-                            context.Error(
-                                ValidationErrorCodes.R533LeafFieldSelections,
-                                "Leaf selections on objects, interfaces, and unions " +
-                                "without subfields are disallowed.",
-                                selection);
+                            if (selectionType is ScalarType && hasSubSelection == true)
+                                context.Error(
+                                    ValidationErrorCodes.R533LeafFieldSelections,
+                                    "Field selections on scalars or enums are never " +
+                                    "allowed, because they are the leaf nodes of any GraphQL query.",
+                                    selection);
+
+                            if (selectionType is EnumType && hasSubSelection == true)
+                                context.Error(
+                                    ValidationErrorCodes.R533LeafFieldSelections,
+                                    "Field selections on scalars or enums are never " +
+                                    "allowed, because they are the leaf nodes of any GraphQL query.",
+                                    selection);
+
+                            if (selectionType is ComplexType && hasSubSelection == null)
+                                context.Error(
+                                    ValidationErrorCodes.R533LeafFieldSelections,
+                                    "Leaf selections on objects, interfaces, and unions " +
+                                    "without subfields are disallowed.",
+                                    selection);
+
+                            if (selectionType is UnionType && hasSubSelection == null)
+                                context.Error(
+                                    ValidationErrorCodes.R533LeafFieldSelections,
+                                    "Leaf selections on objects, interfaces, and unions " +
+                                    "without subfields are disallowed.",
+                                    selection);
+                        }
                     }
                 }
             };
@@ -268,15 +288,18 @@ namespace tanka.graphql.validation
         {
             return context => new RuleVisitor
             {
-                EnterArgument = argument =>
+                Argument = new NodeVisitor<GraphQLArgument>()
                 {
-                    if (context.Tracker.GetArgument() == null)
-                        context.Error(
-                            ValidationErrorCodes.R541ArgumentNames,
-                            "Every argument provided to a field or directive " +
-                            "must be defined in the set of possible arguments of that " +
-                            "field or directive.",
-                            argument);
+                    Enter = argument =>
+                    {
+                        if (context.Tracker.GetArgument() == null)
+                            context.Error(
+                                ValidationErrorCodes.R541ArgumentNames,
+                                "Every argument provided to a field or directive " +
+                                "must be defined in the set of possible arguments of that " +
+                                "field or directive.",
+                                argument);
+                    }
                 }
             };
         }
@@ -297,6 +320,38 @@ namespace tanka.graphql.validation
         /// </summary>
         public static CreateRule R5421RequiredArguments()
         {
+            return context => new RuleVisitor
+            {
+                FieldSelection = new NodeVisitor<GraphQLFieldSelection>()
+                {
+                    Enter = field =>
+                    {
+                        var args = field.Arguments.ToList();
+                        var argumentDefinitions = GetArgumentDefinitions(context);
+
+                        //todo: should this produce error?
+                        if (argumentDefinitions == null)
+                            return;
+
+                        ValidateArguments(argumentDefinitions, args, context);
+                    }
+                },
+                Directive = new NodeVisitor<GraphQLDirective>()
+                {
+                    Enter = directive =>
+                    {
+                        var args = directive.Arguments.ToList();
+                        var argumentDefinitions = GetArgumentDefinitions(context);
+
+                        //todo: should this produce error?
+                        if (argumentDefinitions == null)
+                            return;
+
+                        ValidateArguments(argumentDefinitions, args, context);
+                    }
+                }
+            };
+
             IEnumerable<KeyValuePair<string, Argument>> GetArgumentDefinitions(IRuleVisitorContext context)
             {
                 var definitions = context.Tracker.GetDirective()?.Arguments
@@ -305,10 +360,12 @@ namespace tanka.graphql.validation
                 return definitions;
             }
 
-            void ValidateArguments(IEnumerable<KeyValuePair<string, Argument>> keyValuePairs,
-                List<GraphQLArgument> graphQLArguments, IRuleVisitorContext ruleVisitorContext)
+            void ValidateArguments(
+                IEnumerable<KeyValuePair<string, Argument>> argumentDefinitions,
+                List<GraphQLArgument> graphQLArguments,
+                IRuleVisitorContext ruleVisitorContext)
             {
-                foreach (var argumentDefinition in keyValuePairs)
+                foreach (var argumentDefinition in argumentDefinitions)
                 {
                     var type = argumentDefinition.Value.Type;
                     var defaultValue = argumentDefinition.Value.DefaultValue;
@@ -345,32 +402,6 @@ namespace tanka.graphql.validation
                             graphQLArguments);
                 }
             }
-
-            return context => new RuleVisitor
-            {
-                EnterFieldSelection = field =>
-                {
-                    var args = field.Arguments.ToList();
-                    var argumentDefinitions = GetArgumentDefinitions(context);
-
-                    //todo: should this produce error?
-                    if (argumentDefinitions == null)
-                        return;
-
-                    ValidateArguments(argumentDefinitions, args, context);
-                },
-                EnterDirective = directive =>
-                {
-                    var args = directive.Arguments.ToList();
-                    var argumentDefinitions = GetArgumentDefinitions(context);
-
-                    //todo: should this produce error?
-                    if (argumentDefinitions == null)
-                        return;
-
-                    ValidateArguments(argumentDefinitions, args, context);
-                }
-            };
         }
 
         /// <summary>
@@ -386,17 +417,20 @@ namespace tanka.graphql.validation
                 var knownArgs = new List<string>();
                 return new RuleVisitor
                 {
-                    EnterArgument = argument =>
+                    Argument = new NodeVisitor<GraphQLArgument>()
                     {
-                        if (knownArgs.Contains(argument.Name.Value))
-                            context.Error(
-                                ValidationErrorCodes.R542ArgumentUniqueness,
-                                "Fields and directives treat arguments as a mapping of " +
-                                "argument name to value. More than one argument with the same " +
-                                "name in an argument set is ambiguous and invalid.",
-                                argument);
+                        Enter = argument =>
+                        {
+                            if (knownArgs.Contains(argument.Name.Value))
+                                context.Error(
+                                    ValidationErrorCodes.R542ArgumentUniqueness,
+                                    "Fields and directives treat arguments as a mapping of " +
+                                    "argument name to value. More than one argument with the same " +
+                                    "name in an argument set is ambiguous and invalid.",
+                                    argument);
 
-                        knownArgs.Add(argument.Name.Value);
+                            knownArgs.Add(argument.Name.Value);
+                        }
                     }
                 };
             };
@@ -415,16 +449,19 @@ namespace tanka.graphql.validation
                 var knownFragments = new List<string>();
                 return new RuleVisitor
                 {
-                    EnterFragmentDefinition = fragment =>
+                    FragmentDefinition = new NodeVisitor<GraphQLFragmentDefinition>()
                     {
-                        if (knownFragments.Contains(fragment.Name.Value))
-                            context.Error(
-                                ValidationErrorCodes.R5511FragmentNameUniqueness,
-                                "Fragment definitions are referenced in fragment spreads by name. To avoid " +
-                                "ambiguity, each fragment’s name must be unique within a document.",
-                                fragment);
+                        Enter = fragment =>
+                        {
+                            if (knownFragments.Contains(fragment.Name.Value))
+                                context.Error(
+                                    ValidationErrorCodes.R5511FragmentNameUniqueness,
+                                    "Fragment definitions are referenced in fragment spreads by name. To avoid " +
+                                    "ambiguity, each fragment’s name must be unique within a document.",
+                                    fragment);
 
-                        knownFragments.Add(fragment.Name.Value);
+                            knownFragments.Add(fragment.Name.Value);
+                        }
                     }
                 };
             };
@@ -439,27 +476,33 @@ namespace tanka.graphql.validation
         {
             return context => new RuleVisitor
             {
-                EnterFragmentDefinition = node =>
+                FragmentDefinition = new NodeVisitor<GraphQLFragmentDefinition>()
                 {
-                    var type = context.Tracker.GetCurrentType();
+                    Enter = node =>
+                    {
+                        var type = context.Tracker.GetCurrentType();
 
-                    if (type == null)
-                        context.Error(
-                            ValidationErrorCodes.R5512FragmentSpreadTypeExistence,
-                            "Fragments must be specified on types that exist in the schema. This " +
-                            "applies for both named and inline fragments. ",
-                            node);
+                        if (type == null)
+                            context.Error(
+                                ValidationErrorCodes.R5512FragmentSpreadTypeExistence,
+                                "Fragments must be specified on types that exist in the schema. This " +
+                                "applies for both named and inline fragments. ",
+                                node);
+                    }
                 },
-                EnterInlineFragment = node =>
+                InlineFragment = new NodeVisitor<GraphQLInlineFragment>()
                 {
-                    var type = context.Tracker.GetCurrentType();
+                    Enter = node =>
+                    {
+                        var type = context.Tracker.GetCurrentType();
 
-                    if (type == null)
-                        context.Error(
-                            ValidationErrorCodes.R5512FragmentSpreadTypeExistence,
-                            "Fragments must be specified on types that exist in the schema. This " +
-                            "applies for both named and inline fragments. ",
-                            node);
+                        if (type == null)
+                            context.Error(
+                                ValidationErrorCodes.R5512FragmentSpreadTypeExistence,
+                                "Fragments must be specified on types that exist in the schema. This " +
+                                "applies for both named and inline fragments. ",
+                                node);
+                    }
                 }
             };
         }
@@ -472,35 +515,41 @@ namespace tanka.graphql.validation
         {
             return context => new RuleVisitor
             {
-                EnterFragmentDefinition = node =>
+                FragmentDefinition = new NodeVisitor<GraphQLFragmentDefinition>()
                 {
-                    var type = context.Tracker.GetCurrentType();
+                    Enter = node =>
+                    {
+                        var type = context.Tracker.GetCurrentType();
 
-                    if (type is UnionType)
-                        return;
+                        if (type is ComplexType)
+                            return;
 
-                    if (type is ComplexType)
-                        return;
+                        if (type is UnionType)
+                            return;
 
-                    context.Error(
-                        ValidationErrorCodes.R5513FragmentsOnCompositeTypes,
-                        "Fragments can only be declared on unions, interfaces, and objects",
-                        node);
+                        context.Error(
+                            ValidationErrorCodes.R5513FragmentsOnCompositeTypes,
+                            "Fragments can only be declared on unions, interfaces, and objects",
+                            node);
+                    }
                 },
-                EnterInlineFragment = node =>
+                InlineFragment = new NodeVisitor<GraphQLInlineFragment>()
                 {
-                    var type = context.Tracker.GetCurrentType();
+                    Enter = node =>
+                    {
+                        var type = context.Tracker.GetCurrentType();
 
-                    if (type is UnionType)
-                        return;
+                        if (type is ComplexType)
+                            return;
 
-                    if (type is ComplexType)
-                        return;
+                        if (type is UnionType)
+                            return;
 
-                    context.Error(
-                        ValidationErrorCodes.R5513FragmentsOnCompositeTypes,
-                        "Fragments can only be declared on unions, interfaces, and objects",
-                        node);
+                        context.Error(
+                            ValidationErrorCodes.R5513FragmentsOnCompositeTypes,
+                            "Fragments can only be declared on unions, interfaces, and objects",
+                            node);
+                    }
                 }
             };
         }
@@ -518,18 +567,33 @@ namespace tanka.graphql.validation
 
                 return new RuleVisitor
                 {
-                    EnterFragmentDefinition = fragment => { fragments.Add(fragment.Name.Value, fragment); },
-                    EnterFragmentSpread = spread => { fragmentSpreads.Add(spread.Name.Value); },
-                    LeaveDocument = document =>
+                    FragmentDefinition = new NodeVisitor<GraphQLFragmentDefinition>()
                     {
-                        foreach (var fragment in fragments)
+                        Enter = fragment =>
                         {
-                            var name = fragment.Key;
-                            if (!fragmentSpreads.Contains(name))
-                                context.Error(
-                                    ValidationErrorCodes.R5514FragmentsMustBeUsed,
-                                    "Defined fragments must be used within a document.",
-                                    fragment.Value);
+                            fragments.Add(fragment.Name.Value, fragment);
+                        }
+                    },
+                    FragmentSpread = new NodeVisitor<GraphQLFragmentSpread>()
+                    {
+                        Enter = spread =>
+                        {
+                            fragmentSpreads.Add(spread.Name.Value);
+                        }
+                    },
+                    Document = new NodeVisitor<GraphQLDocument>()
+                    {
+                        Leave = document =>
+                        {
+                            foreach (var fragment in fragments)
+                            {
+                                var name = fragment.Key;
+                                if (!fragmentSpreads.Contains(name))
+                                    context.Error(
+                                        ValidationErrorCodes.R5514FragmentsMustBeUsed,
+                                        "Defined fragments must be used within a document.",
+                                        fragment.Value);
+                            }
                         }
                     }
                 };

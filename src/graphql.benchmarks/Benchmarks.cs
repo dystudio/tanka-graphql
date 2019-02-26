@@ -20,7 +20,7 @@ namespace tanka.graphql.benchmarks
         private ISchema _schema;
         private GraphQLDocument _mutation;
         private GraphQLDocument _subscription;
-        private IEnumerable<CreateRule> _defaultRulesMap;
+        private CreateRule[] _executionRules;
 
         [GlobalSetup]
         public async Task Setup()
@@ -29,7 +29,7 @@ namespace tanka.graphql.benchmarks
             _query = Utils.InitializeQuery();
             _mutation = Utils.InitializeMutation();
             _subscription = Utils.InitializeSubscription();
-            _defaultRulesMap = ExecutionRules.All;
+            _executionRules = ExecutionRules.All;
         }
         /*
         [Benchmark]
@@ -158,7 +158,7 @@ namespace tanka.graphql.benchmarks
         public void Validate_query_with_defaults_v2()
         {
             var result = Validator.Validate(
-                _defaultRulesMap,
+                _executionRules,
                 _schema,
                 _query);
 
